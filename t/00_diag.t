@@ -16,6 +16,7 @@ $modules{$_} = $_ for qw(
   File::Which
   Path::Tiny
   Test2::V0
+  namespace::autoclean
 );
 
 

@@ -182,6 +182,10 @@ subtest 'executable discovery' => sub {
   ok !-e 'oops', 'no shell ran';
 };
 
+subtest 'imported functions and constants are not methods' => sub {
+  ok !OpenAPI::Humbug->can($_), "no $_ method" for qw( which any encode_base64 SHUTDOWN_GRACE FAILURE_GRACE KILL_GRACE CHUNK );
+};
+
 subtest 'destroy cleans up' => sub {
   my $pid;
   {

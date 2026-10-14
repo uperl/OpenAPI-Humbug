@@ -12,6 +12,7 @@ use Path::Tiny ();
 use POSIX ();
 use Time::HiRes ();
 use OpenAPI::Humbug::Error;
+use namespace::autoclean -also => [qw( SHUTDOWN_GRACE FAILURE_GRACE KILL_GRACE CHUNK )];
 
 # ABSTRACT: Humbug OpenAPI client
 # VERSION
