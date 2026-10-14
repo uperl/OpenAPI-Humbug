@@ -131,7 +131,12 @@ use Class::Tiny qw( spec ), {
   max_stderr_bytes => 64 * 1024,
 };
 
-my $json = JSON::PP->new->utf8->canonical->core_bools;
+# Cpanel::JSON::XS is faster when installed; 4.38 is the first to encode core booleans as JSON booleans
+my $json = eval {
+  require Cpanel::JSON::XS;
+  Cpanel::JSON::XS->VERSION('4.38');
+  Cpanel::JSON::XS->new->utf8->canonical->unblessed_bool;
+} // JSON::PP->new->utf8->canonical->core_bools;
 
 sub BUILD ($self, $args) {
   my %known = map { $_ => 1 } Class::Tiny->get_all_attributes_for(ref $self);
@@ -868,6 +873,12 @@ The unit tests use a fake sidecar and need neither Go nor C<humbug>.  The integr
 against a real C<humbug> if C<OPENAPI_HUMBUG_EXECUTABLE> names one, and are skipped otherwise:
 
  OPENAPI_HUMBUG_EXECUTABLE=/path/to/humbug prove -lv t/integration.t
+
+=head1 JSON
+
+L<Cpanel::JSON::XS> 4.38 or later is used if it is installed, and L<JSON::PP> otherwise.  Either way
+results are the same.  L<Cpanel::JSON::XS> is optional, but recommended for large bodies or many
+transactions.
 
 =head1 PLATFORMS
 

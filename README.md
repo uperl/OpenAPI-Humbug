@@ -351,6 +351,12 @@ against a real `humbug` if `OPENAPI_HUMBUG_EXECUTABLE` names one, and are skippe
 OPENAPI_HUMBUG_EXECUTABLE=/path/to/humbug prove -lv t/integration.t
 ```
 
+# JSON
+
+[Cpanel::JSON::XS](https://metacpan.org/pod/Cpanel::JSON::XS) 4.38 or later is used if it is installed, and [JSON::PP](https://metacpan.org/pod/JSON::PP) otherwise.  Either way
+results are the same.  [Cpanel::JSON::XS](https://metacpan.org/pod/Cpanel::JSON::XS) is optional, but recommended for large bodies or many
+transactions.
+
 # PLATFORMS
 
 Linux and macOS.  Windows is not supported yet.

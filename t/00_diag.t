@@ -11,6 +11,7 @@ my $post_diag;
 
 $modules{$_} = $_ for qw(
   Class::Tiny
+  Cpanel::JSON::XS
   ExtUtils::MakeMaker
   File::Which
   Path::Tiny
