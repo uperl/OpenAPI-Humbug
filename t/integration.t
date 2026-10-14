@@ -111,6 +111,34 @@ subtest 'sidecar error keeps the client usable' => sub {
   ok $humbug->validate(request => { method => 'GET', url => "$base/pets/1" })->{valid}, 'still usable';
 };
 
+subtest 'Mojolicious transaction' => sub {
+  skip_all 'Mojolicious 9.0 or later is not installed' unless eval { require Mojolicious; Mojolicious->VERSION('9.0'); 1 };
+  require Mojo::UserAgent;
+
+  my $app = Mojolicious->new;
+  $app->log->level('fatal');
+  $app->routes->get('/pets/:id' => sub ($c) {
+    my $id = $c->param('id');
+    $c->render(json => $id eq '1' ? { id => 1, name => 'Rex' } : { id => 0 + $id });
+  });
+  my $ua = Mojo::UserAgent->new;
+  $ua->server->app($app);
+
+  my $result = $humbug->validate($ua->get('/pets/1'));
+  is $result->{request}{status}, 'valid', 'request valid';
+  is $result->{response}{status}, 'valid', 'response valid';
+  is $result->{valid}, T(), 'transaction valid';
+
+  $result = $humbug->validate($ua->get('/pets/2'));
+  is $result->{response}{status}, 'invalid', 'response missing name';
+  like codes($result->{response}), bag { item 'schema.required'; etc }, 'schema.required';
+
+  my $tx = $ua->build_tx(POST => 'https://api.example.test/pets' => { 'X-Request-Id' => 'abc123' } => json => { name => 'Rex', age => -1 });
+  $result = $humbug->validate($tx);
+  is $result->{response}{status}, 'skipped', 'unsent response not validated';
+  like codes($result->{request}), bag { item 'schema.minimum'; etc }, 'request body from Mojo validated';
+};
+
 subtest 'same child throughout' => sub {
   is $humbug->{transport}->pid, $pid, 'one process';
   ok $humbug->close, 'clean shutdown';

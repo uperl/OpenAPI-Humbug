@@ -163,11 +163,22 @@ my $result = $humbug->validate(
   response => \%response,                  # optional
   validate => { request => 1, response => 1 }, # optional
 );
+
+# Mojolicious messages, in place of either hash
+my $result = $humbug->validate(request => $tx->req, response => $tx->res);
+
+# a Mojolicious transaction, in place of both
+my $result = $humbug->validate($tx);
+my $result = $humbug->validate($tx, validate => { response => 0 });
 ```
 
 Validates one HTTP transaction and returns the sidecar's complete `result` object as a hash
 reference.  A transaction that violates the specification, or that could not be fully checked, is
 still a result; it is never an exception.
+
+`request` and `response` may each be a hash reference, as described below, or a
+[Mojo::Message::Request](https://metacpan.org/pod/Mojo::Message::Request) or [Mojo::Message::Response](https://metacpan.org/pod/Mojo::Message::Response); a [Mojo::Transaction::HTTP](https://metacpan.org/pod/Mojo::Transaction::HTTP) may be passed
+first in place of both.  See ["MOJOLICIOUS"](#mojolicious) for how those are converted.
 
 The request is a hash reference with these keys:
 
@@ -214,6 +225,62 @@ It does not throw.
 
 Dropping the last reference to the client does the same on a best-effort basis, but an explicit
 `close` is recommended.
+
+# MOJOLICIOUS
+
+[Mojolicious](https://metacpan.org/pod/Mojolicious) is optional.  It is never loaded by this module; when a [Mojo::Message::Request](https://metacpan.org/pod/Mojo::Message::Request),
+[Mojo::Message::Response](https://metacpan.org/pod/Mojo::Message::Response) or [Mojo::Transaction::HTTP](https://metacpan.org/pod/Mojo::Transaction::HTTP) is passed to ["validate"](#validate), it is converted
+to the request and response hashes described there, and then validated exactly like them.  The Mojo
+objects are only read, never changed.  Mojolicious 9.0 or later is supported.
+
+- Requests
+
+    The method is sent as is.  The URL is Mojo's effective absolute URL (`$req->url->to_abs`)
+    without its fragment or credentials.  A relative request URL is resolved against the base URL Mojo
+    keeps for it: on the server, from the connection and the `Host` header; for a request parsed from
+    raw text, from `Host` with scheme `http`.  If Mojo has no scheme and host to resolve it against,
+    `validate` throws an `argument` error rather than guess.  Mojo stores the path and query as
+    received, but percent-encodes characters that are not allowed in a URL.
+
+- Responses
+
+    The status code is required: a response Mojo has not received or generated yet is an `argument`
+    error.
+
+- Headers
+
+    Every header line is sent, and repeated lines (`Set-Cookie` in particular) stay separate lines in
+    their original order.  Two things are lost inside Mojo before this module sees the message: the
+    relative order of lines with **different** names (Mojo groups them by name and sorts the names), and
+    the original casing of common names (Mojo uses its canonical casing, such as `Content-Type`, and
+    otherwise the casing of the first line with that name).  A folded (multi-line) value is joined with a
+    space.  Header values are the bytes Mojo holds.
+
+- Bodies
+
+    The body is the bytes Mojo holds for the message, never re-serialized.  Mojo has already removed
+    chunked transfer encoding, and, where it decompressed a body (its user agent does so for `gzip`
+    responses), it also removed the `Content-Encoding` header; a body Mojo did not decompress is sent
+    as is, still encoded.  Some bodies have no faithful bytes, and are an `argument` error: a body that
+    is still being received, a streamed (dynamic) body, and a `multipart` body, which Mojo keeps only
+    as parsed parts.
+
+    Mojo does not record whether a message had no body or an empty one, so the HTTP rules decide
+    (RFC 9112 section 6.3).  A request has a body if it has data, a `Content-Length` or a
+    `Transfer-Encoding`; otherwise it has none.  A response to `HEAD` (when the request is known), and
+    a `1xx`, `204` or `304` response, has no body; any other response has one, possibly empty.
+
+- Transactions
+
+    `validate($tx)` validates `$tx->req`, and `$tx->res` only if the response is
+    complete: it has a status code and Mojo has finished it, that is received it in full (client side)
+    or sent it in full (server side).  Otherwise the response is left out, and only the request is
+    checked; asking for it with `validate => { response => 1 }` is then an `argument` error.  On
+    the server, before the response has been sent (in an `after_dispatch` hook, for example), pass
+    `request => $tx->req, response => $tx->res` instead.  Only `validate` may follow the
+    transaction.
+
+[OpenAPI::Humbug::Adapter::Mojo](https://metacpan.org/pod/OpenAPI::Humbug::Adapter::Mojo) does the conversion; it is internal and not a supported interface.
 
 # HEADERS
 
