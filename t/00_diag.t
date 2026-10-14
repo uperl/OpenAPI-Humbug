@@ -10,7 +10,6 @@ my %modules;
 my $post_diag;
 
 $modules{$_} = $_ for qw(
-  Class::Tiny
   ExtUtils::MakeMaker
   Test2::V0
 );

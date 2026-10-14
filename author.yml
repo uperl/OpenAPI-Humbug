@@ -7,6 +7,10 @@ pod_spelling_system:
   # intentionally
   stopwords:
     - OpenAPI
+    - KiB
+    - MiB
+    - macOS
+    - validator
 
 pod_coverage:
   skip: 0

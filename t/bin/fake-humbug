@@ -1,0 +1,154 @@
+use 5.042;
+use warnings;
+use JSON::PP ();
+use MIME::Base64 ();
+use Time::HiRes ();
+
+# A stand-in for humbug used by the unit tests.  Run as: $^X t/bin/fake-humbug [init-mode]
+#
+# init modes: ok, error, exit, hang, bad_result, minimal, noisy
+#
+# A validate command's request url selects what happens (fake:<behavior>); any other url
+# gets a valid result that echoes the raw command line as fake.line_base64.
+
+my $mode = shift // 'ok';
+my $json = JSON::PP->new->utf8->canonical;
+
+if(my $file = $ENV{FAKE_HUMBUG_PIDFILE}) {
+  open my $fh, '>', $file or die "$file: $!";
+  print $fh $$;
+  close $fh;
+}
+
+binmode STDIN;
+binmode STDOUT;
+STDOUT->autoflush(1);
+STDERR->autoflush(1);
+
+sub reply ($reply) { print $json->encode($reply), "\n" }
+
+sub noise { print STDERR ('x' x 1023) . "\n" for 1..2048 }  # 2 MiB, more than a pipe holds
+
+sub result_for ($params) {
+  my $side = { status => 'valid', complete => JSON::PP::true, has_violations => JSON::PP::false, valid => JSON::PP::true, diagnostics => [] };
+  return {
+    valid          => JSON::PP::true,
+    complete       => JSON::PP::true,
+    has_violations => JSON::PP::false,
+    request        => { %$side },
+    response       => { %$side, status => 'skipped', valid => JSON::PP::false },
+  };
+}
+
+while(defined(my $line = <STDIN>)) {
+  my $command = $json->decode($line);
+  my $id = $command->{id};
+
+  if($command->{type} eq 'initialize') {
+    if($mode eq 'error') {
+      reply { id => $id, type => 'error', error => { code => 'spec.invalid', message => 'cannot read the specification' } };
+      next;
+    }
+    exit 3 if $mode eq 'exit';
+    sleep 60 if $mode eq 'hang';
+    if($mode eq 'bad_result') {
+      reply { id => $id, type => 'result', result => { protocol_version => 1 } };
+      next;
+    }
+    noise() if $mode eq 'noisy';
+    my $result = {
+      protocol_version => 1,
+      specification    => { openapi_version => '3.1.0', title => 'Fake', spec_path => $command->{params}{spec}{path} },
+    };
+    unless($mode eq 'minimal') {
+      $result->{limits} = { max_body_bytes => 16, max_future_thing => 7 };
+      $result->{implementation} = { name => 'fake-humbug', version => '0.0.1' };
+    }
+    reply { id => $id, type => 'result', result => $result };
+    next;
+  }
+
+  if($command->{type} eq 'shutdown') {
+    reply { id => $id, type => 'result', result => {} };
+    exit 0;
+  }
+
+  my $params = $command->{params};
+  my($behavior) = ($params->{request}{url} // '') =~ /^fake:(.*)$/;
+  $behavior //= 'echo';
+
+  if($behavior eq 'echo') {
+    my $result = result_for($params);
+    $result->{fake}{line_base64} = MIME::Base64::encode_base64($line, '');
+    reply { id => $id, type => 'result', result => $result };
+  } elsif($behavior eq 'error') {
+    reply { id => $id, type => 'error', error => { code => 'validator.unsupported_input', message => 'header name is not a token', future => 1 } };
+  } elsif($behavior eq 'incomplete') {
+    my $result = result_for($params);
+    $result->{valid} = $result->{complete} = JSON::PP::false;
+    $result->{future_field} = { nested => [1, 2] };
+    $result->{request} = {
+      status => 'incomplete', complete => JSON::PP::false, has_violations => JSON::PP::false, valid => JSON::PP::false,
+      diagnostics => [
+        { id => 'd1', code => 'validation.incomplete', severity => 'info', message => 'x', detail => { reason => 'body.something_new' }, suppressed_by => undef },
+        { id => 'd2', code => 'future.code', severity => 'warning', message => 'y', suppressed_by => 'd1', caused_by => 'd1', brand_new => [ 'a' ] },
+      ],
+    };
+    reply { id => $id, type => 'result', result => $result };
+  } elsif($behavior eq 'invalid') {
+    my $result = result_for($params);
+    $result->{valid} = $result->{request}{valid} = JSON::PP::false;
+    $result->{has_violations} = $result->{request}{has_violations} = JSON::PP::true;
+    $result->{request}{status} = 'invalid';
+    $result->{request}{diagnostics} = [ { id => 'd1', code => 'schema.type', severity => 'error', message => 'z', suppressed_by => undef } ];
+    reply { id => $id, type => 'result', result => $result };
+  } elsif($behavior eq 'badjson') {
+    print "{not json\n";
+  } elsif($behavior eq 'notobject') {
+    print "[1,2]\n";
+  } elsif($behavior eq 'mismatch') {
+    reply { id => $id + 1, type => 'result', result => result_for($params) };
+  } elsif($behavior eq 'stringid') {
+    reply { id => "x$id", type => 'result', result => result_for($params) };
+  } elsif($behavior eq 'nullid_result') {
+    reply { id => undef, type => 'result', result => result_for($params) };
+  } elsif($behavior eq 'nullid_error') {
+    reply { id => undef, type => 'error', error => { code => 'protocol.line_too_long', message => 'too long' } };
+  } elsif($behavior eq 'badtype') {
+    reply { id => $id, type => 'banana', result => result_for($params) };
+  } elsif($behavior eq 'noresult') {
+    reply { id => $id, type => 'result' };
+  } elsif($behavior eq 'baderror') {
+    reply { id => $id, type => 'error', error => { message => 'no code' } };
+  } elsif($behavior eq 'eof') {
+    exit 4;
+  } elsif($behavior eq 'partial') {
+    print '{"id":';
+    exit 0;
+  } elsif($behavior eq 'signal') {
+    kill 'KILL', $$;
+  } elsif($behavior eq 'hang') {
+    sleep 60;
+  } elsif($behavior eq 'stderr') {
+    noise();
+    reply { id => $id, type => 'result', result => result_for($params) };
+  } elsif($behavior eq 'extra') {
+    reply { id => $id, type => 'result', result => result_for($params) };
+    reply { id => $id, type => 'result', result => result_for($params) };
+  } elsif($behavior eq 'huge') {
+    print '{"padding":"', ('x' x 100_000), '"}', "\n";
+  } elsif($behavior eq 'closestdin') {
+    reply { id => $id, type => 'result', result => result_for($params) };
+    close STDIN;
+    Time::HiRes::sleep(0.3);
+    exit 0;
+  } elsif($behavior eq 'ignore_shutdown') {
+    reply { id => $id, type => 'result', result => result_for($params) };
+    $SIG{TERM} = 'IGNORE';
+    sleep 60 while 1;
+  } else {
+    die "unknown behavior $behavior";
+  }
+}
+
+exit 0;
