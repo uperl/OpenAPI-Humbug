@@ -118,7 +118,10 @@ sub _url ($req) {
   my $url = $req->url->to_abs;
   _argument('request URL is relative and Mojo has no scheme and host to resolve it against')
     unless $url->is_abs && length($url->host // '');
+  # neither a fragment nor credentials are part of the effective URL; to_string documents that it
+  # leaves out userinfo, but clear it anyway so that does not depend on which method is called
   $url->fragment(undef);
+  $url->userinfo(undef);
   return $url->to_string;
 }
 

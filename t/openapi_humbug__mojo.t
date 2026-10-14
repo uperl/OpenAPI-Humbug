@@ -169,6 +169,7 @@ subtest 'urls' => sub {
 
   $req = Mojo::Message::Request->new->url(Mojo::URL->new('https://user:secret@api.example.test/p'));
   is sent(request => $req)->{request}{url}, 'https://api.example.test/p', 'credentials are not part of the effective URL';
+  is $req->url->to_unsafe_string, 'https://user:secret@api.example.test/p', 'request URL unchanged';
 };
 
 subtest 'messages that cannot be converted' => sub {
