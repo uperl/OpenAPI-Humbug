@@ -14,7 +14,9 @@ $modules{$_} = $_ for qw(
   Cpanel::JSON::XS
   ExtUtils::MakeMaker
   File::Which
+  Mojolicious
   Path::Tiny
+  Test2::Require::Module
   Test2::V0
   namespace::autoclean
 );

@@ -254,9 +254,20 @@ sub stderr         ($self) { $self->{transport}->stderr          }
    validate => { request => 1, response => 1 }, # optional
  );
 
+ # Mojolicious messages, in place of either hash
+ my $result = $humbug->validate(request => $tx->req, response => $tx->res);
+
+ # a Mojolicious transaction, in place of both
+ my $result = $humbug->validate($tx);
+ my $result = $humbug->validate($tx, validate => { response => 0 });
+
 Validates one HTTP transaction and returns the sidecar's complete C<result> object as a hash
 reference.  A transaction that violates the specification, or that could not be fully checked, is
 still a result; it is never an exception.
+
+C<request> and C<response> may each be a hash reference, as described below, or a
+L<Mojo::Message::Request> or L<Mojo::Message::Response>; a L<Mojo::Transaction::HTTP> may be passed
+first in place of both.  See L</MOJOLICIOUS> for how those are converted.
 
 The request is a hash reference with these keys:
 
@@ -303,15 +314,42 @@ C<kind> C<argument> before anything is sent.
 my %request_keys  = map { $_ => 1 } qw( method url headers body );
 my %response_keys = map { $_ => 1 } qw( status headers body );
 
-sub validate ($self, %args) {
+sub validate ($self, @args) {
+  # validate($tx, %options): a Mojo::Transaction::HTTP in place of request and response
+  my $tx = @args % 2 ? shift @args : undef;
+  my %args = @args;
+
   for my $key (sort keys %args) {
     _argument("unknown argument '$key'") unless $key =~ /^(?:request|response|validate)$/;
+  }
+
+  if(defined $tx) {
+    _argument("a transaction must be a Mojo::Transaction::HTTP")
+      unless blessed $tx && $tx->isa('Mojo::Transaction::HTTP');
+    _argument("request and response cannot be given with a transaction")
+      if exists $args{request} || exists $args{response};
+    my %converted = _mojo()->transaction($tx);
+    _argument("the transaction's response is not complete, so it cannot be validated")
+      if !$converted{response} && ref $args{validate} eq 'HASH' && $args{validate}{response};
+    %args = (%args, %converted);
+  } else {
+    if(blessed $args{request}) {
+      _argument("request must be a hash reference or a Mojo::Message::Request")
+        unless $args{request}->isa('Mojo::Message::Request');
+      $args{request} = _mojo()->request($args{request});
+    }
+    if(blessed $args{response}) {
+      _argument("response must be a hash reference or a Mojo::Message::Response")
+        unless $args{response}->isa('Mojo::Message::Response');
+      my $method = ref $args{request} eq 'HASH' ? $args{request}{method} : undef;
+      $args{response} = _mojo()->response($args{response}, $method);
+    }
   }
 
   my %params;
 
   my $request = $args{request};
-  _argument("request is required and must be a hash reference") unless ref $request eq 'HASH';
+  _argument("request is required and must be a hash reference or a Mojo::Message::Request") unless ref $request eq 'HASH';
   for my $key (sort keys %$request) {
     _argument("unknown request key '$key'") unless $request_keys{$key};
   }
@@ -327,7 +365,7 @@ sub validate ($self, %args) {
 
   if(defined $args{response}) {
     my $response = $args{response};
-    _argument("response must be a hash reference") unless ref $response eq 'HASH';
+    _argument("response must be a hash reference or a Mojo::Message::Response") unless ref $response eq 'HASH';
     for my $key (sort keys %$response) {
       _argument("unknown response key '$key'") unless $response_keys{$key};
     }
@@ -352,6 +390,12 @@ sub validate ($self, %args) {
   }
 
   return $self->_command(validate => \%params);
+}
+
+# the Mojolicious adapter, loaded only when a Mojo object is passed
+sub _mojo () {
+  require OpenAPI::Humbug::Adapter::Mojo;
+  return 'OpenAPI::Humbug::Adapter::Mojo';
 }
 
 sub _message_common ($side, $message) {
@@ -512,6 +556,66 @@ sub _command ($self, $type, $params = undef, $timeout = $self->timeout) {
 
   return $reply->{result};
 }
+
+=head1 MOJOLICIOUS
+
+L<Mojolicious> is optional.  It is never loaded by this module; when a L<Mojo::Message::Request>,
+L<Mojo::Message::Response> or L<Mojo::Transaction::HTTP> is passed to L</validate>, it is converted
+to the request and response hashes described there, and then validated exactly like them.  The Mojo
+objects are only read, never changed.  Mojolicious 9.0 or later is supported.
+
+=over 4
+
+=item Requests
+
+The method is sent as is.  The URL is Mojo's effective absolute URL (C<< $req->url->to_abs >>)
+without its fragment or credentials.  A relative request URL is resolved against the base URL Mojo
+keeps for it: on the server, from the connection and the C<Host> header; for a request parsed from
+raw text, from C<Host> with scheme C<http>.  If Mojo has no scheme and host to resolve it against,
+C<validate> throws an C<argument> error rather than guess.  Mojo stores the path and query as
+received, but percent-encodes characters that are not allowed in a URL.
+
+=item Responses
+
+The status code is required: a response Mojo has not received or generated yet is an C<argument>
+error.
+
+=item Headers
+
+Every header line is sent, and repeated lines (C<Set-Cookie> in particular) stay separate lines in
+their original order.  Two things are lost inside Mojo before this module sees the message: the
+relative order of lines with B<different> names (Mojo groups them by name and sorts the names), and
+the original casing of common names (Mojo uses its canonical casing, such as C<Content-Type>, and
+otherwise the casing of the first line with that name).  A folded (multi-line) value is joined with a
+space.  Header values are the bytes Mojo holds.
+
+=item Bodies
+
+The body is the bytes Mojo holds for the message, never re-serialized.  Mojo has already removed
+chunked transfer encoding, and, where it decompressed a body (its user agent does so for C<gzip>
+responses), it also removed the C<Content-Encoding> header; a body Mojo did not decompress is sent
+as is, still encoded.  Some bodies have no faithful bytes, and are an C<argument> error: a body that
+is still being received, a streamed (dynamic) body, and a C<multipart> body, which Mojo keeps only
+as parsed parts.
+
+Mojo does not record whether a message had no body or an empty one, so the HTTP rules decide
+(RFC 9112 section 6.3).  A request has a body if it has data, a C<Content-Length> or a
+C<Transfer-Encoding>; otherwise it has none.  A response to C<HEAD> (when the request is known), and
+a C<1xx>, C<204> or C<304> response, has no body; any other response has one, possibly empty.
+
+=item Transactions
+
+C<< validate($tx) >> validates C<< $tx->req >>, and C<< $tx->res >> only if the response is
+complete: it has a status code and Mojo has finished it, that is received it in full (client side)
+or sent it in full (server side).  Otherwise the response is left out, and only the request is
+checked; asking for it with C<< validate => { response => 1 } >> is then an C<argument> error.  On
+the server, before the response has been sent (in an C<after_dispatch> hook, for example), pass
+C<< request => $tx->req, response => $tx->res >> instead.  Only C<validate> may follow the
+transaction.
+
+=back
+
+L<OpenAPI::Humbug::Adapter::Mojo> does the conversion; it is internal and not a supported interface.
 
 =head1 HEADERS
 
