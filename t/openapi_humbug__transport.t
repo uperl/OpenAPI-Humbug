@@ -90,6 +90,47 @@ subtest 'close escalates when the child ignores shutdown and SIGTERM' => sub {
   ok $elapsed < 10, "bounded wait (${elapsed}s)";
 };
 
+subtest 'close after the child was killed' => sub {
+  my $humbug = fake_humbug();
+  my $pid = child_pid($humbug);
+  kill 'KILL', $pid;
+  my $start = Time::HiRes::time();
+  my $clean;
+  ok lives { $clean = $humbug->close }, 'close does not throw';
+  ok !$clean, 'not a clean exit';
+  ok reaped($pid), 'reaped';
+  ok Time::HiRes::time() - $start < 3, 'promptly';
+  ok lives { $humbug->close }, 'second close';
+};
+
+subtest 'close after the child exited on its own' => sub {
+  my $humbug = fake_humbug();
+  my $pid = child_pid($humbug);
+  $humbug->validate(request => { method => 'GET', url => 'fake:closestdin' });  # exits 0 shortly after
+  Time::HiRes::sleep(0.6);
+  my $clean;
+  ok lives { $clean = $humbug->close }, 'close does not throw';
+  ok $clean, 'exit status 0 is a clean exit';
+  ok reaped($pid), 'reaped';
+};
+
+subtest 'close after the child was reaped elsewhere' => sub {
+  my $humbug = fake_humbug();
+  my $pid = child_pid($humbug);
+  kill 'KILL', $pid;
+  waitpid $pid, 0;
+  ok lives { $humbug->close }, 'close does not throw';
+};
+
+subtest 'validate after the child died' => sub {
+  my $humbug = fake_humbug();
+  kill 'KILL', child_pid($humbug);
+  Time::HiRes::sleep(0.1);
+  my $error = dies { $humbug->validate(request => { method => 'GET', url => 'https://x/' }) };
+  is $error->kind, 'transport', 'transport failure, not a result';
+  like $error->code, qr/^client\.(eof|broken_pipe)$/, 'eof or broken pipe';
+};
+
 subtest 'no zombies left behind' => sub {
   my $got = waitpid -1, POSIX::WNOHANG();
   is $got, -1, 'no children left to reap';

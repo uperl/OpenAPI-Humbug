@@ -3,6 +3,7 @@ package OpenAPI::Humbug::Transport::Command;
 use 5.042;
 use warnings;
 use parent 'OpenAPI::Humbug::Transport';
+use Fcntl qw( F_DUPFD F_GETFD F_SETFD FD_CLOEXEC );
 use File::Which qw( which );
 use POSIX ();
 use Time::HiRes ();
@@ -111,6 +112,14 @@ sub _spawn ($self) {
   pipe($stderr, $child_err)  or _spawn_failed("pipe: $!");
   pipe($status_r, $status_w) or _spawn_failed("pipe: $!");
 
+  # Perl only marks fds above $^F close-on-exec, and a pipe can get fd 0, 1 or 2 when the caller
+  # has closed a standard handle, so set it on every end explicitly.  Only the fds the child
+  # dup2s onto 0, 1 and 2 survive exec; $status_w closing on exec is how the parent learns that
+  # exec succeeded.
+  for my $fh ($child_in, $stdin, $stdout, $child_out, $stderr, $child_err, $status_r, $status_w) {
+    _close_on_exec($fh, 1) or _spawn_failed("fcntl: $!");
+  }
+
   my $executable = $self->executable;
   my @args       = $self->args->@*;
 
@@ -118,12 +127,13 @@ sub _spawn ($self) {
   _spawn_failed("fork: $!") unless defined $pid;
 
   if($pid == 0) {
-    # child: fds above $^F are close-on-exec, so only 0, 1 and 2 survive exec,
-    # and $status_w reports exec failure to the parent.
+    # child: put the pipes on 0, 1 and 2, which dup2 leaves open across exec; if exec fails,
+    # $status_w reports the errno to the parent.  The ends are first copied above 2 so that
+    # one landing on 0, 1 or 2 cannot be overwritten by another's dup2.
     eval {
-      POSIX::dup2(fileno $child_in,  0) // die;
-      POSIX::dup2(fileno $child_out, 1) // die;
-      POSIX::dup2(fileno $child_err, 2) // die;
+      my @high = map { fcntl($_, F_DUPFD, 3) // die } $child_in, $child_out, $child_err;
+      POSIX::dup2($high[$_], $_) // die for 0..2;
+      POSIX::close($_) for @high;
       no warnings 'exec';
       exec { $executable } $executable, @args;
     };
@@ -149,6 +159,13 @@ sub _spawn ($self) {
 
   @$self{qw( pid stdin stdout stderr )} = ($pid, $stdin, $stdout, $stderr);
   return;
+}
+
+sub _close_on_exec ($fh, $on) {
+  my $flags = fcntl $fh, F_GETFD, 0;
+  return undef unless defined $flags;
+  $flags = $on ? $flags | FD_CLOEXEC : $flags & ~FD_CLOEXEC;
+  return fcntl $fh, F_SETFD, $flags;
 }
 
 # how the child ended, if it already has
