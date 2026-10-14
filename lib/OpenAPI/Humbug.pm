@@ -1,9 +1,8 @@
-use warnings;
+package OpenAPI::Humbug;
+
 use 5.042;
-use experimental qw( defer try );
-use true;
+use warnings;
+use Class::Tiny;
 
-package OpenAPI::Humbug {
-
-    # ABSTRACT: Humbug OpenAPI client
-}
+# ABSTRACT: Humbug OpenAPI client
+# VERSION
