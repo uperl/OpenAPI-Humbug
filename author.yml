@@ -5,10 +5,18 @@ pod_spelling_system:
   # (regardless of what spell check thinks)
   # or stuff that I like to spell incorrectly
   # intentionally
-  stopwords: []
+  stopwords:
+    - OpenAPI
+    - KiB
+    - MiB
+    - macOS
+    - validator
 
 pod_coverage:
   skip: 0
   # format is "Class#method" or "Class",regex allowed
   # for either Class or method.
-  private: []
+  private:
+    - OpenAPI::Humbug.*#BUILD
+    - OpenAPI::Humbug.*#DEMOLISH
+    - OpenAPI::Humbug::Transport::Command#(ends_with_shutdown|stderr)
