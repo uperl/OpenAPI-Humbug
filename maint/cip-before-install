@@ -4,3 +4,13 @@ set -ex
 
 # optional, but needed to run the Mojolicious tests
 cip exec cpanm -n Mojolicious
+
+# the humbug sidecar for t/integration.t (linux.yml points OPENAPI_HUMBUG_EXECUTABLE at it):
+# the current stable Go, then humbug from the default branch of go-humbug
+cip sudo bash -c '
+  set -ex
+  version=$(curl -sSfL "https://go.dev/VERSION?m=text" | head -1)
+  rm -rf /usr/local/go
+  curl -sSfL "https://go.dev/dl/$version.linux-amd64.tar.gz" | tar -C /usr/local -zxf -
+'
+cip exec env GOBIN=/home/cip/bin /usr/local/go/bin/go install github.com/uperl/go-humbug/cmd/humbug@latest

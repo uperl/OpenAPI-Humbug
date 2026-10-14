@@ -23,6 +23,7 @@ jobs:
 
     env:
       CIP_TAG: ${{ matrix.cip_tag }}
+      CIP_ENV: OPENAPI_HUMBUG_EXECUTABLE=/home/cip/bin/humbug
 
     steps:
       - uses: actions/checkout@v7
