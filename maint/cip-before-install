@@ -1,0 +1,6 @@
+#!/bin/bash
+
+set -ex
+
+# optional, but needed to run the Mojolicious tests
+cip exec cpanm -n Mojolicious
