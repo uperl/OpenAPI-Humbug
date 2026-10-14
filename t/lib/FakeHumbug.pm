@@ -44,5 +44,3 @@ sub fake_pid ($code) {
   unlink $file;
   return $pid;
 }
-
-1;

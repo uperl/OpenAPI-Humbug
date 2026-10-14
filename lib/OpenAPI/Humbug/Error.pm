@@ -174,5 +174,3 @@ sub as_string ($self) {
   $string .= " at $self->{file} line $self->{line}." if defined $self->{file};
   return "$string\n";
 }
-
-1;

@@ -708,8 +708,6 @@ sub _reap ($pid, $seconds) {
   }
 }
 
-1;
-
 =head1 HEADERS
 
 Headers are an ordered array reference of C<[$name, $value]> pairs, never a hash, because HTTP
