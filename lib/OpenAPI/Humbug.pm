@@ -2,12 +2,13 @@ package OpenAPI::Humbug;
 
 use 5.042;
 use warnings;
+use Config;
 use Errno ();
-use File::Spec;
 use IO::Select;
 use JSON::PP ();
 use List::Util ();
 use MIME::Base64 ();
+use Path::Tiny ();
 use POSIX ();
 use Time::HiRes ();
 use OpenAPI::Humbug::Error;
@@ -142,7 +143,7 @@ sub BUILD ($self, $args) {
 
   my $spec = $self->spec;
   _argument("spec is required and must be a path") unless defined $spec && !ref $spec && length $spec;
-  $self->spec(File::Spec->rel2abs($spec));
+  $self->spec(Path::Tiny::path($spec)->absolute->stringify);
 
   my $extra = $self->args;
   _argument("args must be an array reference of strings")
@@ -442,9 +443,9 @@ sub _find_executable ($name) {
       message => "executable '$name' is not an executable file");
   }
 
-  for my $dir (File::Spec->path) {
-    my $path = File::Spec->catfile(length $dir ? $dir : '.', $name);
-    return $path if -f $path && -x _;
+  for my $dir (split /\Q$Config{path_sep}\E/, $ENV{PATH} // '') {
+    my $path = Path::Tiny::path(length $dir ? $dir : '.')->child($name);
+    return $path->stringify if $path->is_file && -x $path;
   }
 
   OpenAPI::Humbug::Error->throw(kind => 'process', code => 'client.spawn_failed',

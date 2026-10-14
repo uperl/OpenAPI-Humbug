@@ -1,7 +1,7 @@
 use Test2::V0 -no_srand => 1;
 use 5.042;
 use lib 't/lib';
-use File::Spec;
+use Path::Tiny qw( path );
 use OpenAPI::Humbug;
 use FakeHumbug;
 
@@ -9,7 +9,7 @@ subtest 'initialize, validate, close' => sub {
   my $humbug = fake_humbug();
   isa_ok $humbug, 'OpenAPI::Humbug';
 
-  is $humbug->specification, { openapi_version => '3.1.0', title => 'Fake', spec_path => File::Spec->rel2abs('corpus/pets.yaml') },
+  is $humbug->specification, { openapi_version => '3.1.0', title => 'Fake', spec_path => path('corpus/pets.yaml')->absolute->stringify },
     'specification, with the spec path made absolute';
   is $humbug->limits, { max_body_bytes => 16, max_future_thing => 7 }, 'limits, unknown keys kept';
   is $humbug->implementation, { name => 'fake-humbug', version => '0.0.1' }, 'implementation';
@@ -163,13 +163,14 @@ subtest 'executable discovery' => sub {
     is $error->code, 'client.spawn_failed', 'not in PATH';
   }
 
-  my($volume, $dir, $file) = File::Spec->splitpath($^X);
+  my $perl = path($^X);
+  my $file = $perl->basename;
   {
-    local $ENV{PATH} = File::Spec->catpath($volume, $dir, '');
+    local $ENV{PATH} = $perl->parent->stringify;
     my $humbug = OpenAPI::Humbug->new(
       spec       => 'corpus/pets.yaml',
       executable => $file,
-      args       => [File::Spec->rel2abs('t/bin/fake-humbug')],
+      args       => [path('t/bin/fake-humbug')->absolute->stringify],
     );
     ok $humbug->validate(request => { method => 'GET', url => 'https://x/' })->{valid}, 'found in PATH';
     $humbug->close;

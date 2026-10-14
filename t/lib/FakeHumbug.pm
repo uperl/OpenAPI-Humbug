@@ -4,13 +4,13 @@ use 5.042;
 use warnings;
 use JSON::PP ();
 use MIME::Base64 ();
-use File::Spec;
+use Path::Tiny qw( path );
 use OpenAPI::Humbug;
 use Exporter qw( import );
 
 our @EXPORT = qw( fake_humbug wire_command reaped fake_pid );
 
-my $fake = File::Spec->rel2abs('t/bin/fake-humbug');
+my $fake = path('t/bin/fake-humbug')->absolute->stringify;
 
 # a client talking to t/bin/fake-humbug in the given init mode
 sub fake_humbug ($mode = 'ok', %args) {
@@ -35,12 +35,8 @@ sub reaped ($pid) {
 
 # run code with FAKE_HUMBUG_PIDFILE set and return the pid the fake wrote
 sub fake_pid ($code) {
-  my $file = File::Spec->catfile(File::Spec->tmpdir, "fake-humbug-$$-" . int rand 1_000_000);
-  local $ENV{FAKE_HUMBUG_PIDFILE} = $file;
+  my $file = Path::Tiny->tempfile;
+  local $ENV{FAKE_HUMBUG_PIDFILE} = "$file";
   $code->();
-  open my $fh, '<', $file or die "$file: $!";
-  my $pid = <$fh>;
-  close $fh;
-  unlink $file;
-  return $pid;
+  return $file->slurp;
 }
