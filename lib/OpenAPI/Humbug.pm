@@ -3,11 +3,11 @@ package OpenAPI::Humbug;
 use 5.042;
 use warnings;
 use Errno ();
-use File::Which ();
+use File::Which qw( which );
 use IO::Select;
 use JSON::PP ();
-use List::Util ();
-use MIME::Base64 ();
+use List::Util qw( any );
+use MIME::Base64 qw( encode_base64 );
 use Path::Tiny ();
 use POSIX ();
 use Time::HiRes ();
@@ -148,11 +148,11 @@ sub BUILD ($self, $args) {
 
   my $spec = $self->spec;
   _argument("spec is required and must be a path") unless defined $spec && !ref $spec && length $spec;
-  $self->spec(Path::Tiny::path($spec)->absolute->stringify);
+  $self->spec(Path::Tiny->new($spec)->absolute->stringify);
 
   my $extra = $self->args;
   _argument("args must be an array reference of strings")
-    unless ref $extra eq 'ARRAY' && !List::Util::any { !defined $_ || ref $_ } @$extra;
+    unless ref $extra eq 'ARRAY' && !any { !defined $_ || ref $_ } @$extra;
   $self->args([@$extra]);
 
   for my $key (qw( timeout max_reply_bytes max_stderr_bytes )) {
@@ -373,7 +373,7 @@ sub _message_common ($side, $message) {
         unless defined $name && !ref $name && length $name;
       _argument("$side header $n value must be a defined string") unless defined $value && !ref $value;
       my $bytes = _bytes($value) // _argument("$side header $n value contains characters above 0xFF; encode it to bytes first");
-      ["$name", MIME::Base64::encode_base64($bytes, ''), true];
+      ["$name", encode_base64($bytes, ''), true];
     } @$headers ];
   }
 
@@ -381,7 +381,7 @@ sub _message_common ($side, $message) {
     my $body = $message->{body};
     _argument("$side body must be a byte string, not a reference") if ref $body;
     my $bytes = _bytes($body) // _argument("$side body contains characters above 0xFF; encode it to bytes first");
-    $wire{body_base64} = MIME::Base64::encode_base64($bytes, '');
+    $wire{body_base64} = encode_base64($bytes, '');
   }
 
   return %wire;
@@ -448,7 +448,7 @@ sub _find_executable ($name) {
       message => "executable '$name' is not an executable file");
   }
 
-  my $path = File::Which::which($name);
+  my $path = which($name);
   return $path if defined $path;
 
   OpenAPI::Humbug::Error->throw(kind => 'process', code => 'client.spawn_failed',
