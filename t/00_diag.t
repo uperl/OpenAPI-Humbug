@@ -12,6 +12,7 @@ my $post_diag;
 $modules{$_} = $_ for qw(
   Class::Tiny
   ExtUtils::MakeMaker
+  File::Which
   Path::Tiny
   Test2::V0
 );

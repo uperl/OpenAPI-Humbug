@@ -2,8 +2,8 @@ package OpenAPI::Humbug;
 
 use 5.042;
 use warnings;
-use Config;
 use Errno ();
+use File::Which ();
 use IO::Select;
 use JSON::PP ();
 use List::Util ();
@@ -443,10 +443,8 @@ sub _find_executable ($name) {
       message => "executable '$name' is not an executable file");
   }
 
-  for my $dir (split /\Q$Config{path_sep}\E/, $ENV{PATH} // '') {
-    my $path = Path::Tiny::path(length $dir ? $dir : '.')->child($name);
-    return $path->stringify if $path->is_file && -x $path;
-  }
+  my $path = File::Which::which($name);
+  return $path if defined $path;
 
   OpenAPI::Humbug::Error->throw(kind => 'process', code => 'client.spawn_failed',
     message => "executable '$name' not found in PATH");
