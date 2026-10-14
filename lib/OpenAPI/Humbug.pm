@@ -116,62 +116,58 @@ noisy child cannot block; only this much is retained.  Defaults to 64 KiB.
 =cut
 
 use constant {
-  DEFAULT_TIMEOUT          => 60,
-  DEFAULT_MAX_REPLY_BYTES  => 64 * 1024 * 1024,
-  DEFAULT_MAX_STDERR_BYTES => 64 * 1024,
-  SHUTDOWN_GRACE           => 5,
-  FAILURE_GRACE            => 0.2,
-  KILL_GRACE               => 2,
-  CHUNK                    => 65536,
+  SHUTDOWN_GRACE => 5,
+  FAILURE_GRACE  => 0.2,
+  KILL_GRACE     => 2,
+  CHUNK          => 65536,
+};
+
+use Class::Tiny qw( spec ), {
+  executable       => 'humbug',
+  args             => sub { [] },
+  timeout          => 60,
+  max_reply_bytes  => 64 * 1024 * 1024,
+  max_stderr_bytes => 64 * 1024,
 };
 
 my $json = JSON::PP->new->utf8->canonical->core_bools;
 
-my %new_options = map { $_ => 1 } qw( spec executable args timeout max_reply_bytes max_stderr_bytes );
-
-sub new ($class, %args) {
-  for my $key (sort keys %args) {
-    _argument("unknown option '$key'") unless $new_options{$key};
+sub BUILD ($self, $args) {
+  my %known = map { $_ => 1 } Class::Tiny->get_all_attributes_for(ref $self);
+  for my $key (sort keys %$args) {
+    _argument("unknown option '$key'") unless $known{$key};
+    # an explicit undef means the default
+    delete $self->{$key} unless defined $args->{$key};
   }
 
-  my $spec = $args{spec};
+  my $spec = $self->spec;
   _argument("spec is required and must be a path") unless defined $spec && !ref $spec && length $spec;
+  $self->spec(File::Spec->rel2abs($spec));
 
-  my $args = $args{args} // [];
+  my $extra = $self->args;
   _argument("args must be an array reference of strings")
-    unless ref $args eq 'ARRAY' && !List::Util::any { !defined $_ || ref $_ } @$args;
+    unless ref $extra eq 'ARRAY' && !List::Util::any { !defined $_ || ref $_ } @$extra;
+  $self->args([@$extra]);
 
-  my %number = (
-    timeout          => DEFAULT_TIMEOUT,
-    max_reply_bytes  => DEFAULT_MAX_REPLY_BYTES,
-    max_stderr_bytes => DEFAULT_MAX_STDERR_BYTES,
-  );
-  for my $key (sort keys %number) {
-    next unless defined $args{$key};
+  for my $key (qw( timeout max_reply_bytes max_stderr_bytes )) {
+    my $value = $self->$key;
     _argument("$key must be a positive number")
-      unless !ref $args{$key} && $args{$key} =~ /^[0-9]+(?:\.[0-9]+)?$/ && $args{$key} > 0;
-    $number{$key} = $args{$key};
+      unless !ref $value && $value =~ /^[0-9]+(?:\.[0-9]+)?$/ && $value > 0;
   }
 
-  my $executable = _find_executable($args{executable} // 'humbug');
+  $self->executable(_find_executable($self->executable));
 
-  my $self = bless {
-    executable       => $executable,
-    args             => [@$args],
-    spec             => File::Spec->rel2abs($spec),
-    %number,
-    next_id          => 1,
-    stdout_buffer    => '',
-    stderr_buffer    => '',
-    owner_pid        => $$,
-  }, $class;
+  $self->{next_id}       = 1;
+  $self->{stdout_buffer} = '';
+  $self->{stderr_buffer} = '';
+  $self->{owner_pid}     = $$;
 
   $self->_spawn;
 
   my $result = eval {
     $self->_command(initialize => {
       protocol_version => 1,
-      spec             => { path => $self->{spec} },
+      spec             => { path => $self->spec },
     });
   };
   if(my $error = $@) {
@@ -184,13 +180,12 @@ sub new ($class, %args) {
       && defined $result->{protocol_version}
       && !ref $result->{protocol_version}
       && $result->{protocol_version} eq '1') {
-    my $error = $self->_fail(protocol => 'client.unexpected_reply',
+    die $self->_fail(protocol => 'client.unexpected_reply',
       'initialize result lacks protocol_version 1 or specification');
-    die $error;
   }
 
   $self->{initialize} = $result;
-  return $self;
+  return;
 }
 
 =head1 ATTRIBUTES
@@ -221,6 +216,22 @@ C<undef>.  It is for logs and bug reports; do not branch on it.
 
 The most recent bytes (up to C<max_stderr_bytes>) the sidecar wrote to stderr.  A healthy sidecar
 normally writes nothing.
+
+=head2 spec
+
+=head2 executable
+
+=head2 args
+
+=head2 timeout
+
+=head2 max_reply_bytes
+
+=head2 max_stderr_bytes
+
+The constructor options, with defaults applied.  C<spec> is the absolute path sent to the sidecar
+and C<executable> the path that was run.  Changing them after construction has no effect on the
+running child, except that C<timeout> applies to later commands.
 
 =cut
 
@@ -394,7 +405,7 @@ sub close ($self) {
   return $self->{exit_ok} if $self->{closed};
   $self->{closed} = 1;
 
-  my $grace = $self->{timeout} < SHUTDOWN_GRACE ? $self->{timeout} : SHUTDOWN_GRACE;
+  my $grace = $self->timeout < SHUTDOWN_GRACE ? $self->timeout : SHUTDOWN_GRACE;
 
   if(defined $self->{pid} && !$self->{dead}) {
     local $@;
@@ -406,7 +417,7 @@ sub close ($self) {
   return $self->{exit_ok};
 }
 
-sub DESTROY ($self) {
+sub DEMOLISH ($self, $global_destruction) {
   local($@, $!, $?);
   return unless defined $self->{pid};
   if($self->{owner_pid} != $$) {
@@ -459,7 +470,8 @@ sub _spawn ($self) {
       POSIX::dup2(fileno $child_out, 1) // die;
       POSIX::dup2(fileno $child_err, 2) // die;
       no warnings 'exec';
-      exec { $self->{executable} } $self->{executable}, $self->{args}->@*;
+      my $executable = $self->executable;
+      exec { $executable } $executable, $self->args->@*;
     };
     syswrite $status_w, 0 + $!;
     POSIX::_exit(127);
@@ -473,7 +485,7 @@ sub _spawn ($self) {
   if(length $errno) {
     waitpid $pid, 0;
     local $! = $errno;
-    $self->_spawn_failed("cannot execute '$self->{executable}': $!");
+    $self->_spawn_failed("cannot execute '@{[ $self->executable ]}': $!");
   }
 
   for my $fh ($stdin, $stdout, $stderr) {
@@ -503,7 +515,7 @@ sub _fail ($self, $kind, $code, $message) {
 }
 
 # send one command and return its result, or throw
-sub _command ($self, $type, $params = undef, $timeout = $self->{timeout}) {
+sub _command ($self, $type, $params = undef, $timeout = $self->timeout) {
   if($self->{dead} || $self->{closed} && $type ne 'shutdown') {
     OpenAPI::Humbug::Error->throw(kind => 'closed', code => 'client.closed',
       message => 'the client is closed or unusable after an earlier failure');
@@ -621,7 +633,7 @@ sub _exchange ($self, $out, $timeout) {
         if(defined $n && $n == 0) {
           $readers->remove($stderr);
         }
-        my $excess = length($self->{stderr_buffer}) - $self->{max_stderr_bytes};
+        my $excess = length($self->{stderr_buffer}) - $self->max_stderr_bytes;
         substr($self->{stderr_buffer}, 0, $excess, '') if $excess > 0;
         next;
       }
@@ -638,12 +650,12 @@ sub _exchange ($self, $out, $timeout) {
       my $newline = index $self->{stdout_buffer}, "\n", $scan_from;
       if($newline < 0) {
         $scan_from = length $self->{stdout_buffer};
-        die $self->_fail(protocol => 'client.reply_too_long', "reply exceeds $self->{max_reply_bytes} bytes")
-          if $scan_from > $self->{max_reply_bytes};
+        die $self->_fail(protocol => 'client.reply_too_long', "reply exceeds @{[ $self->max_reply_bytes ]} bytes")
+          if $scan_from > $self->max_reply_bytes;
         next;
       }
-      die $self->_fail(protocol => 'client.reply_too_long', "reply exceeds $self->{max_reply_bytes} bytes")
-        if $newline > $self->{max_reply_bytes};
+      die $self->_fail(protocol => 'client.reply_too_long', "reply exceeds @{[ $self->max_reply_bytes ]} bytes")
+        if $newline > $self->max_reply_bytes;
       $reply = substr $self->{stdout_buffer}, 0, $newline + 1, '';
     }
   }

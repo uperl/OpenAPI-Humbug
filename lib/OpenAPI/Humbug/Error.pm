@@ -121,37 +121,23 @@ C<line>, which are filled in from the caller.
 
 =cut
 
-sub new ($class, %args) {
-  my $self = bless {
-    kind    => $args{kind},
-    code    => $args{code},
-    message => $args{message},
-    error   => $args{error},
-    stderr  => $args{stderr},
-  }, $class;
+use Class::Tiny qw( kind code message error stderr file line );
 
-  # report the location in the caller's code, not inside this distribution
+sub BUILD ($self, $args) {
+  # report the location in the caller's code, not inside this distribution or Class::Tiny
   my $level = 0;
   while(my @frame = caller($level++)) {
-    next if $frame[0] =~ /^OpenAPI::Humbug(::|$)/;
-    @$self{qw( file line )} = @frame[1,2];
+    next if $frame[0] =~ /^(?:OpenAPI::Humbug|Class::Tiny)(?:::|$)/;
+    $self->file($frame[1]);
+    $self->line($frame[2]);
     last;
   }
-
-  return $self;
+  return;
 }
 
 sub throw ($class, %args) {
   die $class->new(%args);
 }
-
-sub kind    ($self) { $self->{kind}    }
-sub code    ($self) { $self->{code}    }
-sub message ($self) { $self->{message} }
-sub error   ($self) { $self->{error}   }
-sub stderr  ($self) { $self->{stderr}  }
-sub file    ($self) { $self->{file}    }
-sub line    ($self) { $self->{line}    }
 
 =head1 METHODS
 
@@ -170,7 +156,7 @@ The code, message and location.  This is also what you get when the exception is
 =cut
 
 sub as_string ($self) {
-  my $string = "humbug $self->{kind} error ($self->{code}): $self->{message}";
-  $string .= " at $self->{file} line $self->{line}." if defined $self->{file};
+  my $string = sprintf 'humbug %s error (%s): %s', $self->kind, $self->code, $self->message;
+  $string .= sprintf ' at %s line %s.', $self->file, $self->line if defined $self->file;
   return "$string\n";
 }

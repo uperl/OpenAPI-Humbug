@@ -137,6 +137,22 @@ my $text = $humbug->stderr;
 The most recent bytes (up to `max_stderr_bytes`) the sidecar wrote to stderr.  A healthy sidecar
 normally writes nothing.
 
+## spec
+
+## executable
+
+## args
+
+## timeout
+
+## max\_reply\_bytes
+
+## max\_stderr\_bytes
+
+The constructor options, with defaults applied.  `spec` is the absolute path sent to the sidecar
+and `executable` the path that was run.  Changing them after construction has no effect on the
+running child, except that `timeout` applies to later commands.
+
 # METHODS
 
 ## validate
