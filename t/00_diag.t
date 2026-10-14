@@ -14,6 +14,7 @@ $modules{$_} = $_ for qw(
   Cpanel::JSON::XS
   ExtUtils::MakeMaker
   File::Which
+  HTTP::Message
   Mojolicious
   Path::Tiny
   Test2::Require::Module

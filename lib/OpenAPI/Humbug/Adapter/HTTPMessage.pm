@@ -1,0 +1,145 @@
+package OpenAPI::Humbug::Adapter::HTTPMessage;
+
+use 5.042;
+use warnings;
+use OpenAPI::Humbug::Error;
+use namespace::autoclean;
+
+# ABSTRACT: Internal conversion of HTTP::Request and HTTP::Response for OpenAPI::Humbug
+# VERSION
+
+=head1 SYNOPSIS
+
+ # internal; pass the objects to OpenAPI::Humbug's validate instead
+ $humbug->validate(request => $http_request, response => $http_response);
+ $humbug->validate(response => $http_response);  # uses $http_response->request
+
+=head1 DESCRIPTION
+
+B<This module is internal to L<OpenAPI::Humbug> and is not a supported interface.>  It converts
+L<HTTP::Request> and L<HTTP::Response> objects to the request and response hashes that
+L<OpenAPI::Humbug/validate> accepts.  It is loaded only when one of those objects is passed, and
+does not load HTTP::Message itself.  The calling conventions and what is preserved are documented
+in L<OpenAPI::Humbug/HTTP::MESSAGE>.
+
+The objects are only read, never changed.
+
+=head1 METHODS
+
+=head2 request
+
+ my $hash = OpenAPI::Humbug::Adapter::HTTPMessage->request($http_request);
+
+=head2 response
+
+ my $hash = OpenAPI::Humbug::Adapter::HTTPMessage->response($http_response, $request_method);
+
+The request method, if known, is used to tell an absent response body from an empty one.
+
+=head2 associated_request
+
+ my $http_request = OpenAPI::Humbug::Adapter::HTTPMessage->associated_request($http_response);
+
+The request the response answers (C<< $http_response->request >>), or an C<argument> error if it has
+none.
+
+=cut
+
+sub _argument ($message) {
+  OpenAPI::Humbug::Error->throw(kind => 'argument', code => 'client.argument', message => $message);
+}
+
+sub request ($class, $req) {
+  _argument('request must be an HTTP::Request')
+    unless blessed $req && $req->isa('HTTP::Request');
+  _check_parts('request', $req);
+
+  my %request = (
+    method  => $req->method,
+    url     => _url($req),
+    headers => _headers($req),
+  );
+
+  # A request without Content-Length or Transfer-Encoding has no body (RFC 9112 6.3)
+  my $body = _body('request', $req);
+  $request{body} = $body
+    if length $body || defined $req->header('Content-Length') || defined $req->header('Transfer-Encoding');
+
+  return \%request;
+}
+
+sub response ($class, $res, $method = undef) {
+  _argument('response must be an HTTP::Response')
+    unless blessed $res && $res->isa('HTTP::Response');
+  _check_parts('response', $res);
+
+  my $status = $res->code;
+  _argument('response has no status code') unless defined $status;
+
+  my %response = (
+    status  => $status,
+    headers => _headers($res),
+  );
+
+  # Responses to HEAD, and 1xx, 204 and 304 responses, have no body; any other response has one,
+  # possibly empty, even without Content-Length (it then ends with the connection; RFC 9112 6.3)
+  my $body = _body('response', $res);
+  my $bodiless = $status =~ /^1/ || $status == 204 || $status == 304
+    || (defined $method && uc $method eq 'HEAD');
+  $response{body} = $body if length $body || !$bodiless;
+
+  return \%response;
+}
+
+sub associated_request ($class, $res) {
+  my $req = $res->request;
+  _argument('response has no associated request (HTTP::Response->request); pass request explicitly')
+    unless blessed $req && $req->isa('HTTP::Request');
+  return $req;
+}
+
+# the effective absolute URL, without fragment or credentials
+sub _url ($req) {
+  my $uri = $req->uri;
+  _argument('request has no URI') unless defined $uri;
+  # HTTP::Request has no base URL to resolve a relative URI against, and the Host header gives no
+  # scheme, so only an absolute URI with a host can be used
+  _argument('request URI is not absolute (it needs a scheme and a host)')
+    unless blessed $uri && $uri->isa('URI') && defined $uri->scheme
+        && $uri->can('host') && length($uri->host // '');
+  my $copy = $uri->clone;
+  $copy->fragment(undef);
+  $copy->userinfo(undef) if $copy->can('userinfo');
+  return $copy->as_string;
+}
+
+sub _headers ($msg) {
+  my @lines;
+  $msg->headers->scan(sub ($name, $value) {
+    _argument("header $name has a value that is not a string")
+      if ref $value && !blessed $value;
+    $value = "$value";
+    # HTTP::Headers keeps a folded (obs-fold) value with its line breaks; a recipient replaces each
+    # fold with a space (RFC 9112 5.2)
+    $value =~ s/\x0d?\x0a[ \t]+/ /g;
+    push @lines, [$name, $value];
+  });
+  return \@lines;
+}
+
+# HTTP::Message keeps a body built with parts() or add_part() as parts until its headers or content
+# are read, and reading them then generates the body and rewrites Content-Type, which would change
+# the object; so check this before calling headers, header or content
+sub _check_parts ($side, $msg) {
+  _argument("$side body exists only as parts (built with parts or add_part), so it has no bytes yet")
+    unless exists $msg->{_content};
+  return;
+}
+
+sub _body ($side, $msg) {
+  my $content = $msg->content;
+  _argument("$side body is generated by a code reference, so its bytes are not available")
+    if ref $content eq 'CODE';
+  _argument("$side body is not a byte string") if ref $content;
+  return $content // '';
+}

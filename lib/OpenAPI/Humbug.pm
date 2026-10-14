@@ -261,13 +261,21 @@ sub stderr         ($self) { $self->{transport}->stderr          }
  my $result = $humbug->validate($tx);
  my $result = $humbug->validate($tx, validate => { response => 0 });
 
+ # HTTP::Request and HTTP::Response, in place of either hash
+ my $result = $humbug->validate(request => $http_request, response => $http_response);
+
+ # an HTTP::Response with its associated request ($http_response->request)
+ my $result = $humbug->validate(response => $http_response);
+
 Validates one HTTP transaction and returns the sidecar's complete C<result> object as a hash
 reference.  A transaction that violates the specification, or that could not be fully checked, is
 still a result; it is never an exception.
 
-C<request> and C<response> may each be a hash reference, as described below, or a
-L<Mojo::Message::Request> or L<Mojo::Message::Response>; a L<Mojo::Transaction::HTTP> may be passed
-first in place of both.  See L</MOJOLICIOUS> for how those are converted.
+C<request> and C<response> may each be a hash reference, as described below, a
+L<Mojo::Message::Request> or L<Mojo::Message::Response>, or an L<HTTP::Request> or
+L<HTTP::Response>; a L<Mojo::Transaction::HTTP> may be passed first in place of both.  An
+L<HTTP::Response> given without a C<request> brings its own.  See L</MOJOLICIOUS> and
+L</HTTP::MESSAGE> for how those are converted.
 
 The request is a hash reference with these keys:
 
@@ -324,6 +332,8 @@ sub validate ($self, @args) {
   }
 
   if(defined $tx) {
+    _argument("an HTTP::Response must be passed as response => \$response")
+      if blessed $tx && $tx->isa('HTTP::Response');
     _argument("a transaction must be a Mojo::Transaction::HTTP")
       unless blessed $tx && $tx->isa('Mojo::Transaction::HTTP');
     _argument("request and response cannot be given with a transaction")
@@ -333,23 +343,39 @@ sub validate ($self, @args) {
       if !$converted{response} && ref $args{validate} eq 'HASH' && $args{validate}{response};
     %args = (%args, %converted);
   } else {
-    if(blessed $args{request}) {
-      _argument("request must be a hash reference or a Mojo::Message::Request")
-        unless $args{request}->isa('Mojo::Message::Request');
-      $args{request} = _mojo()->request($args{request});
+    # an HTTP::Response can supply its own request; an explicit request wins
+    if(!defined $args{request} && blessed $args{response} && $args{response}->isa('HTTP::Response')) {
+      $args{request} = _http_message()->associated_request($args{response});
     }
-    if(blessed $args{response}) {
-      _argument("response must be a hash reference or a Mojo::Message::Response")
-        unless $args{response}->isa('Mojo::Message::Response');
+
+    my $request = $args{request};
+    if(blessed $request) {
+      if($request->isa('Mojo::Message::Request')) {
+        $args{request} = _mojo()->request($request);
+      } elsif($request->isa('HTTP::Request')) {
+        $args{request} = _http_message()->request($request);
+      } else {
+        _argument("request must be a hash reference, a Mojo::Message::Request or an HTTP::Request");
+      }
+    }
+
+    my $response = $args{response};
+    if(blessed $response) {
       my $method = ref $args{request} eq 'HASH' ? $args{request}{method} : undef;
-      $args{response} = _mojo()->response($args{response}, $method);
+      if($response->isa('Mojo::Message::Response')) {
+        $args{response} = _mojo()->response($response, $method);
+      } elsif($response->isa('HTTP::Response')) {
+        $args{response} = _http_message()->response($response, $method);
+      } else {
+        _argument("response must be a hash reference, a Mojo::Message::Response or an HTTP::Response");
+      }
     }
   }
 
   my %params;
 
   my $request = $args{request};
-  _argument("request is required and must be a hash reference or a Mojo::Message::Request") unless ref $request eq 'HASH';
+  _argument("request is required and must be a hash reference, a Mojo::Message::Request or an HTTP::Request") unless ref $request eq 'HASH';
   for my $key (sort keys %$request) {
     _argument("unknown request key '$key'") unless $request_keys{$key};
   }
@@ -365,7 +391,7 @@ sub validate ($self, @args) {
 
   if(defined $args{response}) {
     my $response = $args{response};
-    _argument("response must be a hash reference or a Mojo::Message::Response") unless ref $response eq 'HASH';
+    _argument("response must be a hash reference, a Mojo::Message::Response or an HTTP::Response") unless ref $response eq 'HASH';
     for my $key (sort keys %$response) {
       _argument("unknown response key '$key'") unless $response_keys{$key};
     }
@@ -396,6 +422,12 @@ sub validate ($self, @args) {
 sub _mojo () {
   require OpenAPI::Humbug::Adapter::Mojo;
   return 'OpenAPI::Humbug::Adapter::Mojo';
+}
+
+# the HTTP::Message adapter, loaded only when an HTTP::Request or HTTP::Response is passed
+sub _http_message () {
+  require OpenAPI::Humbug::Adapter::HTTPMessage;
+  return 'OpenAPI::Humbug::Adapter::HTTPMessage';
 }
 
 sub _message_common ($side, $message) {
@@ -616,6 +648,61 @@ transaction.
 =back
 
 L<OpenAPI::Humbug::Adapter::Mojo> does the conversion; it is internal and not a supported interface.
+
+=head1 HTTP::MESSAGE
+
+L<HTTP::Message> is optional too.  It is never loaded by this module; when an L<HTTP::Request> or
+L<HTTP::Response> is passed to L</validate> as C<request> or C<response>, it is converted to the
+request and response hashes described there, and then validated exactly like them.  The objects are
+only read, never changed.  HTTP::Message 6.00 or later is supported.  An L<HTTP::Response> must be
+passed by name; C<< validate($http_response) >> is an C<argument> error.
+
+=over 4
+
+=item The request
+
+With C<< response => $http_response >> and no C<request>, the request is the response's associated
+request, C<< $http_response->request >> (which L<LWP::UserAgent> sets to the request that produced
+the response, the last one after redirects).  It is used even when only the response is checked
+(C<< validate => { request => 0 } >>), because the sidecar needs it to find the operation.  A
+response with no associated request is an C<argument> error.  A C<request> passed explicitly, as an
+object or a hash, is always used instead, even when it differs.  A response hash on its own is still
+an error, as before.
+
+=item Requests
+
+The method is sent as is.  The URL is the request's URI without its fragment or credentials.  It must
+be absolute, with a scheme and a host: L<HTTP::Request> has no base URL to resolve a relative URI
+against, and a C<Host> header gives no scheme, so a relative URI is an C<argument> error rather than
+a guess.
+
+=item Headers
+
+Every header line is sent, and repeated lines (C<Set-Cookie> in particular) stay separate lines in
+their original order.  L<HTTP::Headers> does not keep the rest of the wire form: it groups lines by
+name, orders the names its own way (general, request, response and entity headers, then the
+others alphabetically), and normalizes the casing of names (C<content-type> becomes
+C<Content-Type>).  A folded (multi-line) value is joined with a space, as RFC 9112 section 5.2 asks
+of a recipient.  Values are the strings L<HTTP::Headers> holds; an object, such as a L<URI>, is
+stringified.
+
+=item Bodies
+
+The body is the raw C<content>, never C<decoded_content>: no character or C<Content-Encoding>
+decoding, and no re-serialization.  As with any body, a C<gzip> body must be decoded before it is
+validated (see L</BODIES>).  Two bodies have no bytes to send and are an C<argument> error: content
+produced by a code reference, and a body held as parts (built with C<parts> or C<add_part> and not
+yet generated, which would change the message).
+
+HTTP::Message does not record whether a message had no body or an empty one, so the same HTTP rules
+as for Mojolicious decide (RFC 9112 section 6.3).  A request has a body if it has content, a
+C<Content-Length> or a C<Transfer-Encoding>.  A response to C<HEAD>, and a C<1xx>, C<204> or C<304>
+response, has no body; any other response has one, possibly empty.
+
+=back
+
+L<OpenAPI::Humbug::Adapter::HTTPMessage> does the conversion; it is internal and not a supported
+interface.
 
 =head1 HEADERS
 

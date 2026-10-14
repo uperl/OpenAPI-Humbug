@@ -2,8 +2,8 @@
 
 set -ex
 
-# optional, but needed to run the Mojolicious tests
-cip exec cpanm -n Mojolicious
+# optional, but needed to run the Mojolicious and HTTP::Message tests
+cip exec cpanm -n Mojolicious HTTP::Message
 
 # the humbug sidecar for t/integration.t (linux.yml points OPENAPI_HUMBUG_EXECUTABLE at it):
 # the current stable Go, then humbug from the default branch of go-humbug
