@@ -14,7 +14,7 @@ subtest 'initialize, validate, close' => sub {
   is $humbug->limits, { max_body_bytes => 16, max_future_thing => 7 }, 'limits, unknown keys kept';
   is $humbug->implementation, { name => 'fake-humbug', version => '0.0.1' }, 'implementation';
 
-  my $pid = $humbug->{pid};
+  my $pid = child_pid($humbug);
 
   my $result = $humbug->validate(request => { method => 'GET', url => 'https://api.example.test/pets/1' });
   is $result, hash {
@@ -31,7 +31,7 @@ subtest 'initialize, validate, close' => sub {
     my(undef, $command) = wire_command($r);
     is $command->{id}, $n + 1, "command $n has id @{[ $n + 1 ]}" if $n == 2 || $n == 20;
   }
-  is $humbug->{pid}, $pid, 'one child for all commands';
+  is child_pid($humbug), $pid, 'one child for all commands';
 
   ok $humbug->close, 'close reports a clean exit';
   ok reaped($pid), 'child reaped';
@@ -132,7 +132,7 @@ subtest 'initialize result without specification' => sub {
 subtest 'child exits during initialize' => sub {
   my $error;
   my $pid = fake_pid(sub { $error = dies { fake_humbug('exit') } });
-  is $error->kind, 'process', 'kind';
+  is $error->kind, 'transport', 'kind';
   is $error->code, 'client.eof', 'code';
   ok reaped($pid), 'child reaped';
 };
@@ -154,7 +154,7 @@ subtest 'noisy stderr during initialize' => sub {
 
 subtest 'executable discovery' => sub {
   my $error = dies { OpenAPI::Humbug->new(spec => 'corpus/pets.yaml', executable => '/nonexistent/humbug') };
-  is $error->kind, 'process', 'missing path';
+  is $error->kind, 'transport', 'missing path';
   is $error->code, 'client.spawn_failed', 'code';
 
   {
@@ -190,7 +190,7 @@ subtest 'destroy cleans up' => sub {
   my $pid;
   {
     my $humbug = fake_humbug();
-    $pid = $humbug->{pid};
+    $pid = child_pid($humbug);
   }
   ok reaped($pid), 'child reaped on destroy';
 };

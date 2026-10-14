@@ -312,10 +312,10 @@ There are three different outcomes, and they must not be confused:
 
     `validate` throws an [OpenAPI::Humbug::Error](https://metacpan.org/pod/OpenAPI::Humbug::Error): there is no verdict at all.  Its `kind` says
     whether the arguments were bad (`argument`), the sidecar refused the command (`sidecar`, with the
-    sidecar's `code`), or the process or protocol failed (`process`, `protocol`, `timeout`).  A
+    sidecar's `code`), or the connection or protocol failed (`transport`, `protocol`, `timeout`).  A
     failure is never reported as a valid or invalid result.
 
-After an `argument` or `sidecar` error the client can be used again.  After a `process`,
+After an `argument` or `sidecar` error the client can be used again.  After a `transport`,
 `protocol` or `timeout` failure the child is terminated and the client is unusable: further calls
 throw `closed`.  Nothing is restarted or retried automatically; construct a new client if you want
 to continue.

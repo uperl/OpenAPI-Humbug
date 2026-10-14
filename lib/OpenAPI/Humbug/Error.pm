@@ -21,7 +21,7 @@ use overload
      # the sidecar refused the command; the client is still usable
      warn "humbug said @{[ $error->code ]}: @{[ $error->message ]}";
    } else {
-     # argument, process, protocol, timeout or closed
+     # argument, transport, protocol, timeout or closed
      ...
    }
  }
@@ -50,10 +50,11 @@ L</code> and L</message> are the sidecar's C<error.code> and C<error.message> (f
 C<validator.unsupported_input> or C<spec.invalid>), and L</error> is the whole C<error> object.
 After a sidecar error from C<validate>, the client is still usable.
 
-=item process
+=item transport
 
-The child could not be started (C<client.spawn_failed>), closed its stdout without replying
-(C<client.eof>), or stopped reading its stdin (C<client.broken_pipe>).
+The connection to the sidecar failed: the child could not be started (C<client.spawn_failed>),
+the sidecar closed its output without replying (C<client.eof>), or it stopped reading its input
+(C<client.broken_pipe>).
 
 =item protocol
 
@@ -69,19 +70,19 @@ retried.
 
 =item closed
 
-The client was closed, or an earlier process, protocol or timeout failure made it unusable
+The client was closed, or an earlier transport, protocol or timeout failure made it unusable
 (C<client.closed>).
 
 =back
 
-After a C<process>, C<protocol> or C<timeout> failure the child is terminated and reaped and the
-client is unusable; construct a new one to continue.
+After a C<transport>, C<protocol> or C<timeout> failure the connection is closed (a child process
+is terminated and reaped) and the client is unusable; construct a new one to continue.
 
 =head1 ATTRIBUTES
 
 =head2 kind
 
-One of C<argument>, C<sidecar>, C<process>, C<protocol>, C<timeout> or C<closed>.
+One of C<argument>, C<sidecar>, C<transport>, C<protocol>, C<timeout> or C<closed>.
 
 =head2 code
 
@@ -99,8 +100,8 @@ otherwise C<undef>.
 
 =head2 stderr
 
-For C<process>, C<protocol> and C<timeout> errors, the tail of what the sidecar wrote to stderr
-(possibly empty); otherwise C<undef>.
+For C<transport>, C<protocol> and C<timeout> errors, the tail of what the sidecar wrote to stderr
+(possibly empty) when it runs as a child process; otherwise C<undef>.
 
 =head2 file
 

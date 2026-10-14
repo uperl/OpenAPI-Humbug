@@ -8,7 +8,7 @@ use Path::Tiny qw( path );
 use OpenAPI::Humbug;
 use Exporter qw( import );
 
-our @EXPORT = qw( fake_humbug wire_command reaped fake_pid );
+our @EXPORT = qw( fake_humbug wire_command reaped fake_pid child_pid );
 
 my $fake = path('t/bin/fake-humbug')->absolute->stringify;
 
@@ -26,6 +26,11 @@ sub fake_humbug ($mode = 'ok', %args) {
 sub wire_command ($result) {
   my $line = MIME::Base64::decode_base64($result->{fake}{line_base64});
   return ($line, JSON::PP->new->utf8->decode($line));
+}
+
+# the sidecar's process id
+sub child_pid ($humbug) {
+  return $humbug->{transport}->pid;
 }
 
 # true if the process no longer exists (a zombie still counts as existing)

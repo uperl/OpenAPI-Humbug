@@ -14,7 +14,7 @@ my @json = (['Content-Type', 'application/json']);
 sub codes ($side) { [ sort map { $_->{code} } $side->{diagnostics}->@* ] }
 
 my $humbug = OpenAPI::Humbug->new(spec => 'corpus/pets.yaml', executable => $executable);
-my $pid = $humbug->{pid};
+my $pid = $humbug->{transport}->pid;
 
 subtest 'initialize' => sub {
   is $humbug->specification, hash { field openapi_version => '3.1.0'; field title => 'Pets'; etc }, 'specification';
@@ -112,7 +112,7 @@ subtest 'sidecar error keeps the client usable' => sub {
 };
 
 subtest 'same child throughout' => sub {
-  is $humbug->{pid}, $pid, 'one process';
+  is $humbug->{transport}->pid, $pid, 'one process';
   ok $humbug->close, 'clean shutdown';
   ok !kill(0, $pid), 'reaped';
 };

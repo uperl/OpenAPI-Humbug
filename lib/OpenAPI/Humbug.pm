@@ -2,17 +2,13 @@ package OpenAPI::Humbug;
 
 use 5.042;
 use warnings;
-use Errno ();
-use File::Which qw( which );
-use IO::Select;
 use JSON::PP ();
 use List::Util qw( any );
 use MIME::Base64 qw( encode_base64 );
 use Path::Tiny ();
-use POSIX ();
-use Time::HiRes ();
 use OpenAPI::Humbug::Error;
-use namespace::autoclean -also => [qw( SHUTDOWN_GRACE FAILURE_GRACE KILL_GRACE CHUNK )];
+use OpenAPI::Humbug::Transport::Command;
+use namespace::autoclean -also => [qw( SHUTDOWN_GRACE )];
 
 # ABSTRACT: Humbug OpenAPI client
 # VERSION
@@ -117,12 +113,7 @@ noisy child cannot block; only this much is retained.  Defaults to 64 KiB.
 
 =cut
 
-use constant {
-  SHUTDOWN_GRACE => 5,
-  FAILURE_GRACE  => 0.2,
-  KILL_GRACE     => 2,
-  CHUNK          => 65536,
-};
+use constant SHUTDOWN_GRACE => 5;
 
 use Class::Tiny qw( spec ), {
   executable       => 'humbug',
@@ -162,14 +153,11 @@ sub BUILD ($self, $args) {
       unless !ref $value && $value =~ /^[0-9]+(?:\.[0-9]+)?$/ && $value > 0;
   }
 
-  $self->executable(_find_executable($self->executable));
+  $self->{next_id}   = 1;
+  $self->{owner_pid} = $$;
 
-  $self->{next_id}       = 1;
-  $self->{stdout_buffer} = '';
-  $self->{stderr_buffer} = '';
-  $self->{owner_pid}     = $$;
-
-  $self->_spawn;
+  my $transport = $self->{transport} = $self->_build_transport;
+  $self->executable($transport->executable) if $transport->can('executable');
 
   my $result = eval {
     $self->_command(initialize => {
@@ -178,8 +166,8 @@ sub BUILD ($self, $args) {
     });
   };
   if(my $error = $@) {
-    $self->_terminate;
     $self->{dead} = $error;
+    $transport->abort;
     die $error;
   }
 
@@ -193,6 +181,15 @@ sub BUILD ($self, $args) {
 
   $self->{initialize} = $result;
   return;
+}
+
+sub _build_transport ($self) {
+  return OpenAPI::Humbug::Transport::Command->new(
+    executable       => $self->executable,
+    args             => $self->args,
+    max_reply_bytes  => $self->max_reply_bytes,
+    max_stderr_bytes => $self->max_stderr_bytes,
+  );
 }
 
 =head1 ATTRIBUTES
@@ -245,7 +242,7 @@ running child, except that C<timeout> applies to later commands.
 sub specification  ($self) { $self->{initialize}{specification}  }
 sub limits         ($self) { $self->{initialize}{limits}         }
 sub implementation ($self) { $self->{initialize}{implementation} }
-sub stderr         ($self) { $self->{stderr_buffer}              }
+sub stderr         ($self) { $self->{transport}->stderr          }
 
 =head1 METHODS
 
@@ -409,29 +406,27 @@ C<close> is recommended.
 =cut
 
 sub close ($self) {
-  return $self->{exit_ok} if $self->{closed};
+  return $self->{clean} if $self->{closed};
   $self->{closed} = 1;
 
+  my $transport = $self->{transport};
   my $grace = $self->timeout < SHUTDOWN_GRACE ? $self->timeout : SHUTDOWN_GRACE;
 
-  if(defined $self->{pid} && !$self->{dead}) {
+  if(!$self->{dead} && $transport->is_open && $transport->ends_with_shutdown) {
     local $@;
     eval { $self->_command('shutdown', undef, $grace); 1 };
   }
 
-  $self->_terminate($grace);
+  $self->{clean} = $transport->close($grace);
   $self->{dead} //= 1;
-  return $self->{exit_ok};
+  return $self->{clean};
 }
 
 sub DEMOLISH ($self, $global_destruction) {
   local($@, $!, $?);
-  return unless defined $self->{pid};
-  if($self->{owner_pid} != $$) {
-    # forked copy: the child belongs to the parent process; leave it alone
-    delete $self->{pid};
-    return;
-  }
+  # a forked copy must leave the parent's sidecar alone
+  return if !defined $self->{owner_pid} || $self->{owner_pid} != $$;
+  return unless $self->{transport};
   eval { $self->close };
   return;
 }
@@ -440,82 +435,17 @@ sub _argument ($message) {
   OpenAPI::Humbug::Error->throw(kind => 'argument', code => 'client.argument', message => $message);
 }
 
-sub _find_executable ($name) {
-  _argument("executable must be a non-empty string") unless defined $name && !ref $name && length $name;
-
-  if($name =~ m{/}) {
-    return $name if -f $name && -x _;
-    OpenAPI::Humbug::Error->throw(kind => 'process', code => 'client.spawn_failed',
-      message => "executable '$name' is not an executable file");
-  }
-
-  my $path = which($name);
-  return $path if defined $path;
-
-  OpenAPI::Humbug::Error->throw(kind => 'process', code => 'client.spawn_failed',
-    message => "executable '$name' not found in PATH");
-}
-
-# fork and exec directly (IPC::Open3 would use the shell for a single string with metacharacters)
-sub _spawn ($self) {
-  my($child_in, $stdin, $stdout, $child_out, $stderr, $child_err, $status_r, $status_w);
-  pipe($child_in, $stdin)        or $self->_spawn_failed("pipe: $!");
-  pipe($stdout, $child_out)      or $self->_spawn_failed("pipe: $!");
-  pipe($stderr, $child_err)      or $self->_spawn_failed("pipe: $!");
-  pipe($status_r, $status_w)     or $self->_spawn_failed("pipe: $!");
-
-  my $pid = fork;
-  $self->_spawn_failed("fork: $!") unless defined $pid;
-
-  if($pid == 0) {
-    # child: fds above $^F are close-on-exec, so only 0, 1 and 2 survive exec,
-    # and $status_w reports exec failure to the parent.
-    eval {
-      POSIX::dup2(fileno $child_in,  0) // die;
-      POSIX::dup2(fileno $child_out, 1) // die;
-      POSIX::dup2(fileno $child_err, 2) // die;
-      no warnings 'exec';
-      my $executable = $self->executable;
-      exec { $executable } $executable, $self->args->@*;
-    };
-    syswrite $status_w, 0 + $!;
-    POSIX::_exit(127);
-  }
-
-  CORE::close $_ for $child_in, $child_out, $child_err, $status_w;
-
-  my $errno = '';
-  1 while sysread($status_r, $errno, 64, length $errno);
-  CORE::close $status_r;
-  if(length $errno) {
-    waitpid $pid, 0;
-    local $! = $errno;
-    $self->_spawn_failed("cannot execute '@{[ $self->executable ]}': $!");
-  }
-
-  for my $fh ($stdin, $stdout, $stderr) {
-    binmode $fh;
-    $fh->blocking(0);
-  }
-
-  @$self{qw( pid stdin stdout stderr )} = ($pid, $stdin, $stdout, $stderr);
-  return;
-}
-
-sub _spawn_failed ($self, $message) {
-  OpenAPI::Humbug::Error->throw(kind => 'process', code => 'client.spawn_failed', message => $message);
-}
-
-# record a fatal failure: the client becomes unusable and the child is terminated
+# a protocol failure: the reply cannot be trusted, so the client becomes unusable
 sub _fail ($self, $kind, $code, $message) {
+  my $transport = $self->{transport};
   my $error = OpenAPI::Humbug::Error->new(
     kind    => $kind,
     code    => $code,
     message => $message,
-    stderr  => $self->{stderr_buffer},
+    stderr  => $transport->stderr,
   );
   $self->{dead} = $error;
-  $self->_terminate(FAILURE_GRACE);
+  $transport->abort;
   return $error;
 }
 
@@ -534,7 +464,13 @@ sub _command ($self, $type, $params = undef, $timeout = $self->timeout) {
   $command{params} = $params if defined $params;
   my $line = $json->encode(\%command) . "\n";
 
-  my $reply_line = $self->_exchange($line, $timeout);
+  # a transport failure has already closed the transport
+  my $reply_line = eval { $self->{transport}->exchange($line, $timeout) };
+  unless(defined $reply_line) {
+    my $error = $@;
+    $self->{dead} = $error;
+    die $error;
+  }
 
   my $reply = eval { $json->decode($reply_line) };
   die $self->_fail(protocol => 'client.malformed_reply', 'reply is not valid JSON')
@@ -575,154 +511,6 @@ sub _command ($self, $type, $params = undef, $timeout = $self->timeout) {
     unless ref $reply->{result} eq 'HASH';
 
   return $reply->{result};
-}
-
-# write one line and read one line, draining stderr, within the timeout
-sub _exchange ($self, $out, $timeout) {
-  # anything already waiting on stdout was not asked for, and would be mistaken for our reply
-  if(IO::Select->new($self->{stdout})->can_read(0)) {
-    sysread $self->{stdout}, $self->{stdout_buffer}, CHUNK, length $self->{stdout_buffer};
-  }
-  die $self->_fail(protocol => 'client.unsolicited_output', 'sidecar wrote output before the command was sent')
-    if length $self->{stdout_buffer};
-
-  local $SIG{PIPE} = 'IGNORE';
-
-  my $deadline = Time::HiRes::time() + $timeout;
-  my($stdin, $stdout, $stderr) = @$self{qw( stdin stdout stderr )};
-  my $written    = 0;
-  my $broken     = 0;
-  my $stdout_eof = 0;
-  my $scan_from  = 0;
-  my $reply;
-
-  my $readers = IO::Select->new($stdout, $stderr);
-  my $writers = IO::Select->new($stdin);
-
-  while(1) {
-    if(defined $reply && ($written == length $out || $broken)) {
-      last;
-    }
-    if($stdout_eof && !defined $reply) {
-      my $what = $broken ? 'client.broken_pipe' : 'client.eof';
-      die $self->_fail(process => $what, 'sidecar exited or closed its stdout without replying'
-        . $self->_exit_description);
-    }
-
-    my $remaining = $deadline - Time::HiRes::time();
-    die $self->_fail(timeout => 'client.timeout', "no reply within $timeout seconds")
-      if $remaining <= 0;
-
-    my $want_write = !$broken && $written < length $out;
-    my($can_read, $can_write) = IO::Select->select(
-      $readers->count ? $readers : undef,
-      $want_write     ? $writers : undef,
-      undef,
-      $remaining,
-    );
-
-    for my $fh (@{ $can_write // [] }) {
-      my $n = syswrite $fh, $out, CHUNK, $written;
-      if(defined $n) {
-        $written += $n;
-      } elsif($! == Errno::EPIPE) {
-        $broken = 1;
-      } elsif($! != Errno::EAGAIN && $! != Errno::EINTR) {
-        die $self->_fail(process => 'client.broken_pipe', "write to sidecar failed: $!");
-      }
-    }
-
-    for my $fh (@{ $can_read // [] }) {
-      if($fh == $stderr) {
-        my $n = sysread $fh, $self->{stderr_buffer}, CHUNK, length $self->{stderr_buffer};
-        if(defined $n && $n == 0) {
-          $readers->remove($stderr);
-        }
-        my $excess = length($self->{stderr_buffer}) - $self->max_stderr_bytes;
-        substr($self->{stderr_buffer}, 0, $excess, '') if $excess > 0;
-        next;
-      }
-
-      my $n = sysread $fh, $self->{stdout_buffer}, CHUNK, length $self->{stdout_buffer};
-      if(defined $n && $n == 0) {
-        $readers->remove($stdout);
-        $stdout_eof = 1;
-        next;
-      }
-      next unless $n;
-      next if defined $reply;
-
-      my $newline = index $self->{stdout_buffer}, "\n", $scan_from;
-      if($newline < 0) {
-        $scan_from = length $self->{stdout_buffer};
-        die $self->_fail(protocol => 'client.reply_too_long', "reply exceeds @{[ $self->max_reply_bytes ]} bytes")
-          if $scan_from > $self->max_reply_bytes;
-        next;
-      }
-      die $self->_fail(protocol => 'client.reply_too_long', "reply exceeds @{[ $self->max_reply_bytes ]} bytes")
-        if $newline > $self->max_reply_bytes;
-      $reply = substr $self->{stdout_buffer}, 0, $newline + 1, '';
-    }
-  }
-
-  die $self->_fail(protocol => 'client.unsolicited_output', 'sidecar wrote more than one reply line')
-    if length $self->{stdout_buffer};
-
-  # the child stopped reading part way through our line, so the stream cannot continue
-  die $self->_fail(process => 'client.broken_pipe', 'sidecar stopped reading its stdin')
-    if $broken;
-
-  return $reply;
-}
-
-sub _exit_description ($self) {
-  return '' unless defined $self->{pid};
-  for (1..20) {
-    my $pid = waitpid $self->{pid}, POSIX::WNOHANG();
-    if($pid == $self->{pid}) {
-      $self->{exit_status} = $?;
-      delete $self->{pid};
-      return $? & 127 ? " (killed by signal @{[ $? & 127 ]})" : " (exit status @{[ $? >> 8 ]})";
-    }
-    last if $pid < 0;
-    Time::HiRes::sleep(0.01);
-  }
-  return '';
-}
-
-# close the pipes and reap the child, escalating to SIGTERM and SIGKILL
-sub _terminate ($self, $grace = SHUTDOWN_GRACE) {
-  for my $key (qw( stdin stdout stderr )) {
-    my $fh = delete $self->{$key};
-    CORE::close $fh if defined $fh;
-  }
-
-  if(defined(my $pid = delete $self->{pid})) {
-    my $reaped = _reap($pid, $grace);
-    unless($reaped) {
-      kill 'TERM', $pid;
-      $reaped = _reap($pid, KILL_GRACE);
-    }
-    unless($reaped) {
-      kill 'KILL', $pid;
-      $reaped = _reap($pid, KILL_GRACE);
-    }
-    $self->{exit_status} = $reaped ? $? : undef;
-  }
-
-  $self->{exit_ok} = defined $self->{exit_status} && $self->{exit_status} == 0 ? 1 : 0;
-  return;
-}
-
-sub _reap ($pid, $seconds) {
-  my $deadline = Time::HiRes::time() + $seconds;
-  while(1) {
-    my $got = waitpid $pid, POSIX::WNOHANG();
-    return 1 if $got == $pid;
-    return 1 if $got < 0;  # already reaped elsewhere
-    return 0 if Time::HiRes::time() >= $deadline;
-    Time::HiRes::sleep(0.01);
-  }
 }
 
 =head1 HEADERS
@@ -831,12 +619,12 @@ but not necessarily a violation either.  C<validation.incomplete> diagnostics sa
 
 C<validate> throws an L<OpenAPI::Humbug::Error>: there is no verdict at all.  Its C<kind> says
 whether the arguments were bad (C<argument>), the sidecar refused the command (C<sidecar>, with the
-sidecar's C<code>), or the process or protocol failed (C<process>, C<protocol>, C<timeout>).  A
+sidecar's C<code>), or the connection or protocol failed (C<transport>, C<protocol>, C<timeout>).  A
 failure is never reported as a valid or invalid result.
 
 =back
 
-After an C<argument> or C<sidecar> error the client can be used again.  After a C<process>,
+After an C<argument> or C<sidecar> error the client can be used again.  After a C<transport>,
 C<protocol> or C<timeout> failure the child is terminated and the client is unusable: further calls
 throw C<closed>.  Nothing is restarted or retried automatically; construct a new client if you want
 to continue.

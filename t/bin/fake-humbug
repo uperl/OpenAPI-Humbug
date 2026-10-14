@@ -102,24 +102,6 @@ while(defined(my $line = <STDIN>)) {
     $result->{request}{status} = 'invalid';
     $result->{request}{diagnostics} = [ { id => 'd1', code => 'schema.type', severity => 'error', message => 'z', suppressed_by => undef } ];
     reply { id => $id, type => 'result', result => $result };
-  } elsif($behavior eq 'badjson') {
-    print "{not json\n";
-  } elsif($behavior eq 'notobject') {
-    print "[1,2]\n";
-  } elsif($behavior eq 'mismatch') {
-    reply { id => $id + 1, type => 'result', result => result_for($params) };
-  } elsif($behavior eq 'stringid') {
-    reply { id => "x$id", type => 'result', result => result_for($params) };
-  } elsif($behavior eq 'nullid_result') {
-    reply { id => undef, type => 'result', result => result_for($params) };
-  } elsif($behavior eq 'nullid_error') {
-    reply { id => undef, type => 'error', error => { code => 'protocol.line_too_long', message => 'too long' } };
-  } elsif($behavior eq 'badtype') {
-    reply { id => $id, type => 'banana', result => result_for($params) };
-  } elsif($behavior eq 'noresult') {
-    reply { id => $id, type => 'result' };
-  } elsif($behavior eq 'baderror') {
-    reply { id => $id, type => 'error', error => { message => 'no code' } };
   } elsif($behavior eq 'eof') {
     exit 4;
   } elsif($behavior eq 'partial') {
