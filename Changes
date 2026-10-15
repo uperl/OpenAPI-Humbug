@@ -4,3 +4,4 @@ Revision history for {{$dist->name}}
   - initial version: persistent humbug sidecar client with request and
     response validation, byte-exact headers and bodies, and structured errors
   - validate accepts Mojolicious requests, responses and transactions (gh#2)
+  - validate accepts HTTP::Request and HTTP::Response (gh#3)

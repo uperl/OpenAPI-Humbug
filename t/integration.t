@@ -139,6 +139,26 @@ subtest 'Mojolicious transaction' => sub {
   like codes($result->{request}), bag { item 'schema.minimum'; etc }, 'request body from Mojo validated';
 };
 
+subtest 'HTTP::Request and HTTP::Response' => sub {
+  skip_all 'HTTP::Message 6.00 or later is not installed'
+    unless eval { require HTTP::Request; require HTTP::Response; HTTP::Request->VERSION('6.00'); 1 };
+
+  my $req = HTTP::Request->new(POST => "$base/pets", [ 'Content-Type' => 'application/json', 'X-Request-Id' => 'abc123' ], '{"name":"Rex","age":-1}');
+  my $result = $humbug->validate(request => $req);
+  like codes($result->{request}), bag { item 'schema.minimum'; etc }, 'request body validated';
+
+  my $res = HTTP::Response->new(200, 'OK', [ 'Content-Type' => 'application/json' ], '{"id":1,"name":"Rex"}');
+  $res->request(HTTP::Request->new(GET => "$base/pets/1"));
+  $result = $humbug->validate(response => $res);
+  is $result->{request}{status}, 'valid', 'associated request validated';
+  is $result->{response}{status}, 'valid', 'response validated';
+
+  $res->request(HTTP::Request->new(GET => "$base/pets/not-a-number"));
+  $result = $humbug->validate(response => $res, validate => { request => 0, response => 1 });
+  is $result->{request}{status}, 'skipped', 'request not checked';
+  is $result->{response}{status}, 'valid', 'response checked with the request for context';
+};
+
 subtest 'same child throughout' => sub {
   is $humbug->{transport}->pid, $pid, 'one process';
   ok $humbug->close, 'clean shutdown';

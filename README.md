@@ -170,15 +170,23 @@ my $result = $humbug->validate(request => $tx->req, response => $tx->res);
 # a Mojolicious transaction, in place of both
 my $result = $humbug->validate($tx);
 my $result = $humbug->validate($tx, validate => { response => 0 });
+
+# HTTP::Request and HTTP::Response, in place of either hash
+my $result = $humbug->validate(request => $http_request, response => $http_response);
+
+# an HTTP::Response with its associated request ($http_response->request)
+my $result = $humbug->validate(response => $http_response);
 ```
 
 Validates one HTTP transaction and returns the sidecar's complete `result` object as a hash
 reference.  A transaction that violates the specification, or that could not be fully checked, is
 still a result; it is never an exception.
 
-`request` and `response` may each be a hash reference, as described below, or a
-[Mojo::Message::Request](https://metacpan.org/pod/Mojo::Message::Request) or [Mojo::Message::Response](https://metacpan.org/pod/Mojo::Message::Response); a [Mojo::Transaction::HTTP](https://metacpan.org/pod/Mojo::Transaction::HTTP) may be passed
-first in place of both.  See ["MOJOLICIOUS"](#mojolicious) for how those are converted.
+`request` and `response` may each be a hash reference, as described below, a
+[Mojo::Message::Request](https://metacpan.org/pod/Mojo::Message::Request) or [Mojo::Message::Response](https://metacpan.org/pod/Mojo::Message::Response), or an [HTTP::Request](https://metacpan.org/pod/HTTP::Request) or
+[HTTP::Response](https://metacpan.org/pod/HTTP::Response); a [Mojo::Transaction::HTTP](https://metacpan.org/pod/Mojo::Transaction::HTTP) may be passed first in place of both.  An
+[HTTP::Response](https://metacpan.org/pod/HTTP::Response) given without a `request` brings its own.  See ["MOJOLICIOUS"](#mojolicious) and
+["HTTP::MESSAGE"](#http-message) for how those are converted.
 
 The request is a hash reference with these keys:
 
@@ -281,6 +289,57 @@ objects are only read, never changed.  Mojolicious 9.0 or later is supported.
     transaction.
 
 [OpenAPI::Humbug::Adapter::Mojo](https://metacpan.org/pod/OpenAPI::Humbug::Adapter::Mojo) does the conversion; it is internal and not a supported interface.
+
+# HTTP::MESSAGE
+
+[HTTP::Message](https://metacpan.org/pod/HTTP::Message) is optional too.  It is never loaded by this module; when an [HTTP::Request](https://metacpan.org/pod/HTTP::Request) or
+[HTTP::Response](https://metacpan.org/pod/HTTP::Response) is passed to ["validate"](#validate) as `request` or `response`, it is converted to the
+request and response hashes described there, and then validated exactly like them.  The objects are
+only read, never changed.  HTTP::Message 6.00 or later is supported.  An [HTTP::Response](https://metacpan.org/pod/HTTP::Response) must be
+passed by name; `validate($http_response)` is an `argument` error.
+
+- The request
+
+    With `response => $http_response` and no `request`, the request is the response's associated
+    request, `$http_response->request` (which [LWP::UserAgent](https://metacpan.org/pod/LWP::UserAgent) sets to the request that produced
+    the response, the last one after redirects).  It is used even when only the response is checked
+    (`validate => { request => 0 }`), because the sidecar needs it to find the operation.  A
+    response with no associated request is an `argument` error.  A `request` passed explicitly, as an
+    object or a hash, is always used instead, even when it differs.  A response hash on its own is still
+    an error, as before.
+
+- Requests
+
+    The method is sent as is.  The URL is the request's URI without its fragment or credentials.  It must
+    be absolute, with a scheme and a host: [HTTP::Request](https://metacpan.org/pod/HTTP::Request) has no base URL to resolve a relative URI
+    against, and a `Host` header gives no scheme, so a relative URI is an `argument` error rather than
+    a guess.
+
+- Headers
+
+    Every header line is sent, and repeated lines (`Set-Cookie` in particular) stay separate lines in
+    their original order.  [HTTP::Headers](https://metacpan.org/pod/HTTP::Headers) does not keep the rest of the wire form: it groups lines by
+    name, orders the names its own way (general, request, response and entity headers, then the
+    others alphabetically), and normalizes the casing of names (`content-type` becomes
+    `Content-Type`).  A folded (multi-line) value is joined with a space, as RFC 9112 section 5.2 asks
+    of a recipient.  Values are the strings [HTTP::Headers](https://metacpan.org/pod/HTTP::Headers) holds; an object, such as a [URI](https://metacpan.org/pod/URI), is
+    stringified.
+
+- Bodies
+
+    The body is the raw `content`, never `decoded_content`: no character or `Content-Encoding`
+    decoding, and no re-serialization.  As with any body, a `gzip` body must be decoded before it is
+    validated (see ["BODIES"](#bodies)).  Two bodies have no bytes to send and are an `argument` error: content
+    produced by a code reference, and a body held as parts (built with `parts` or `add_part` and not
+    yet generated, which would change the message).
+
+    HTTP::Message does not record whether a message had no body or an empty one, so the same HTTP rules
+    as for Mojolicious decide (RFC 9112 section 6.3).  A request has a body if it has content, a
+    `Content-Length` or a `Transfer-Encoding`.  A response to `HEAD`, and a `1xx`, `204` or `304`
+    response, has no body; any other response has one, possibly empty.
+
+[OpenAPI::Humbug::Adapter::HTTPMessage](https://metacpan.org/pod/OpenAPI::Humbug::Adapter::HTTPMessage) does the conversion; it is internal and not a supported
+interface.
 
 # HEADERS
 
